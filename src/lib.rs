@@ -1,6 +1,3 @@
-//! Crate to run code in deferred execution, which means you can partition some logic and call its
-//! parts one by one whenever you want to.
-
 use std::collections::VecDeque;
 
 /// Alias for deferred logic part that takes current state and produces next state.

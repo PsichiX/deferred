@@ -1,7 +1,14 @@
 [package]
 name = "deferred"
 version = "1.0.0"
-authors = ["Patryk 'PsichiX' Budzynski <psichix@gmail.com>"]
+authors = ["Patryk 'PsichiX' Budzynski <psichix@gmail.com> (https://psichix.io)"]
 edition = "2018"
+description = "Rust crate to help perform deferred execution of code logic."
+repository = "https://github.com/PsichiX/deferred"
+readme = "README.md"
+keywords = ["deferred", "logic", "execution", "lazy", "evaluation"]
+categories = ["asynchronous"]
+license = "MIT"
+documentation = "https://docs.rs/deferred"
 
 [dependencies]
