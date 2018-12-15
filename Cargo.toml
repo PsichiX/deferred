@@ -1,0 +1,7 @@
+[package]
+name = "deferred"
+version = "1.0.0"
+authors = ["Patryk 'PsichiX' Budzynski <psichix@gmail.com>"]
+edition = "2018"
+
+[dependencies]
