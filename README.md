@@ -1,7 +1,7 @@
 # Deferred
 Rust crate to help perform deferred execution of code logic.
 
-![Travis CI](https://travis-ci.org/PsichiX/deferred.svg?branch=master)
+[![Travis CI](https://travis-ci.org/PsichiX/deferred.svg?branch=master)](https://travis-ci.org/PsichiX/deferred)
 [![Docs.rs](https://docs.rs/deferred/badge.svg)](https://docs.rs/deferred)
 [![Crates.io](https://img.shields.io/crates/v/deferred.svg)](https://crates.io/crates/deferred)
 
@@ -14,26 +14,55 @@ other asynchronous operations.
 Record in `Cargo.toml`:
 ```toml
 [dependencies]
-deferred = "1.0.0"
+deferred = "1.1"
 ```
 
 Your crate module:
 ```rust
-use deferred::Deferred;
+#[macro_use]
+extern crate deferred;
 
-let context = Deferred::new(1, vec![
-    |v| v + 1,
-    |v| v + 2,
-]);
+use deferred::*;
+
+fn foo(v: i32) -> Deferred<i32> {
+    deferred!(v, [
+        |c| state!(c.state() + 1),
+        |c| foo2(c.state()).into(),
+        |c| state!(c.state() + 2)
+    ])
+}
+
+fn foo2(v: i32) -> Deferred<i32> {
+    deferred!(v, [
+      |c| state!(c.state() * 2),
+      |c| state!(c.state() * 3)
+    ])
+}
+
 {
-    println!("{}", context.state()); // 1
-    let context = context.resume().unwrap();
-    println!("{}", context.state()); // 2
-    let context = context.resume().unwrap();
-    println!("{}", context.state()); // 4
+  let d = foo(1);
+  assert!(d.can_resume());
+  assert_eq!(d.state(), Some(&1));
+
+  let d = d.resume().unwrap();
+  assert!(d.can_resume());
+  assert_eq!(d.state(), Some(&2));
+
+  let d = d.resume().unwrap();
+  assert!(d.can_resume());
+  assert_eq!(d.state(), Some(&4));
+
+  let d = d.resume().unwrap();
+  assert!(d.can_resume());
+  assert_eq!(d.state(), Some(&12));
+
+  let d = d.resume().unwrap();
+  assert!(!d.can_resume());
+  assert_eq!(d.state(), Some(&14));
 }
 // IS EQUIVALENT TO:
 {
-    println!("{}", context.consume()); // 4
+  let d = foo(1);
+  assert_eq!(d.consume(), 14);
 }
 ```

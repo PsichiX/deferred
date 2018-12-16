@@ -1,214 +1,111 @@
-use std::collections::VecDeque;
+//! Rust crate to help perform deferred execution of code logic.
+//!
+//! # Problems that `deferred` crate helps to solve
+//! Probably at some point in your project you will want to make a function that can have
+//! partitioned logic and you want to call each of that parts at some strictly defined time
+//! specified by you.
+//! ```
+//! # #[macro_use] extern crate deferred;
+//! # use deferred::*;
+//! # fn main() {
+//! fn foo(v: i32) -> Deferred<i32> {
+//!     deferred!(v, [
+//!         |c| state!(c.state() + 1),
+//!         |c| foo2(c.state()).into(),
+//!         |c| state!(c.state() + 2)
+//!     ])
+//! }
+//!
+//! fn foo2(v: i32) -> Deferred<i32> {
+//!     deferred!(v, [
+//!         |c| state!(c.state() * 2),
+//!         |c| state!(c.state() * 3)
+//!     ])
+//! }
+//!
+//! let d = foo(1);
+//! assert_eq!(d.state(), Some(&1));
+//! let d = d.resume().unwrap();
+//! assert_eq!(d.state(), Some(&2));
+//! let d = d.resume().unwrap();
+//! assert_eq!(d.state(), Some(&4));
+//! let d = d.resume().unwrap();
+//! assert_eq!(d.state(), Some(&12));
+//! let d = d.resume().unwrap();
+//! assert_eq!(d.state(), Some(&14));
+//! assert_eq!(d.can_resume(), false);
+//! # }
+//! ```
+//!
+//! You can think of it as staticaly defined `Promise`-like abstraction known in JavaScript or
+//! other languages with high abstraction of deferred code execution.
+//!
+//! # It is not based on threads
+//! Main reason that this crate was created is that when you work with WASM target, you cannot use
+//! `Futures` or threads but you still need to run some of your code asynchronously, most likely
+//! execute heavy/long calculations "in background" and you cannot make browser freeze.
+//!
+//! # Need to use undefined state type? Look, there is `Value` wrapper!
+//! Sometimes you cannot have the same context input and output types, for example:
+//! ```ignore
+//! fn foo(v: i32) -> Deferred<String> {
+//!     deferred!(v, [
+//!         |c| state!(c.state() + 1),
+//!         |c| state!(format!("{}", c.state()))
+//!     ])
+//! }
+//!
+//! let result: String = foo(42).consume();
+//! ```
+//! Code above gets `i32` as input and expects that at the end we get `String` value and it does
+//! not compile. You could solve it by making tuple with options of each types used in context
+//! inputs and outputs, like this:
+//! ```
+//! # #[macro_use] extern crate deferred;
+//! # use deferred::*;
+//! # fn main() {
+//! type State = (Option<i32>, Option<String>);
+//!
+//! fn foo(v: i32) -> Deferred<State> {
+//!     deferred!((Some(v), None), [
+//!         |c| state!((Some(c.state().0.unwrap() + 1), None)),
+//!         |c| state!((None, Some(format!("{}", c.state().0.unwrap()))))
+//!     ])
+//! }
+//!
+//! let result = foo(41).consume().1.unwrap();
+//! assert_eq!(&result, "42");
+//! # }
+//! ```
+//! but this looks ugly and gets even worse when you have much much more types to use - we do not
+//! want that. We can use `Value` type which is basically a boxed wrapper of any value (that means:
+//! you have to deal with a little runtime overhead because of storing and accessing value on heap).
+//!
+//! Here is how to use `Value` as state:
+//! ```
+//! # #[macro_use] extern crate deferred;
+//! # use deferred::*;
+//! # fn main() {
+//! fn foo(v: i32) -> Deferred<Value> {
+//!     deferred!(value!(v), [
+//!         |c| state!(value!(c.state().consume::<i32>() + 1)),
+//!         |c| state!(value!(format!("{}", c.state().consume::<i32>())))
+//!     ])
+//! }
+//!
+//! let result = foo(41).consume().consume::<String>();
+//! assert_eq!(&result, "42");
+//! # }
+//! ```
 
-/// Alias for deferred logic part that takes current state and produces next state.
-pub type DeferredPart<S> = fn(S) -> S;
+pub mod context;
+pub mod deferred;
+pub mod deferred_manager;
+mod macros;
+mod tests;
+pub mod value;
 
-/// Struct that holds parts and state of deferred logic to execute whenever you want to.
-///
-/// NOTE: everytime when you want to resume execution, you consume deferred context and procuce new
-/// one so keep in mind to restore it before [resume] and store again after [resume].
-pub struct Deferred<S>
-where
-    S: Send + Sync,
-{
-    parts: VecDeque<DeferredPart<S>>,
-    state: S,
-}
-
-impl<S> Deferred<S>
-where
-    S: Send + Sync,
-{
-    /// Creates new deferred execution context.
-    ///
-    /// # Arguments
-    /// * `state` - context initial state.
-    /// * `parts` - vector of logic parts.
-    ///
-    /// # Example
-    /// ```
-    /// use deferred::Deferred;
-    ///
-    /// let context = Deferred::new(1, vec![
-    ///     |v| v + 1,
-    ///     |v| v + 2,
-    /// ]);
-    /// let context = context.resume().unwrap();
-    /// println!("{}", context.state()); // 2
-    /// let context = context.resume().unwrap();
-    /// println!("{}", context.state()); // 4
-    /// ```
-    pub fn new(state: S, parts: Vec<DeferredPart<S>>) -> Self {
-        let mut p = VecDeque::new();
-        p.extend(parts);
-        Self { parts: p, state }
-    }
-
-    /// Gets number of steps needed to complete execution.
-    ///
-    /// # Example
-    /// ```
-    /// use deferred::Deferred;
-    ///
-    /// let context = Deferred::new(1, vec![
-    ///     |v| v + 1,
-    ///     |v| v + 2,
-    /// ]);
-    /// assert_eq!(context.steps_left(), 2);
-    /// let context = context.resume().unwrap();
-    /// assert_eq!(context.steps_left(), 1);
-    /// let context = context.resume().unwrap();
-    /// assert_eq!(context.steps_left(), 0);
-    /// ```
-    pub fn steps_left(&self) -> usize {
-        self.parts.len()
-    }
-
-    /// Tells if deferred execution context can be resumed.
-    ///
-    /// # Example
-    /// ```
-    /// use deferred::Deferred;
-    ///
-    /// let context = Deferred::new(1, vec![
-    ///     |v| v + 1,
-    ///     |v| v + 2,
-    /// ]);
-    /// assert!(context.can_resume());
-    /// let context = context.resume().unwrap();
-    /// assert!(context.can_resume());
-    /// let context = context.resume().unwrap();
-    /// assert!(!context.can_resume());
-    /// ```
-    pub fn can_resume(&self) -> bool {
-        !self.parts.is_empty()
-    }
-
-    /// Gets reference to current state stored in context.
-    ///
-    /// # Example
-    /// ```
-    /// use deferred::Deferred;
-    ///
-    /// let context = Deferred::new(1, vec![
-    ///     |v| v + 1,
-    ///     |v| v + 2,
-    /// ]);
-    /// assert_eq!(context.state(), &1);
-    /// let context = context.resume().unwrap();
-    /// assert_eq!(context.state(), &2);
-    /// let context = context.resume().unwrap();
-    /// assert_eq!(context.state(), &4);
-    /// ```
-    pub fn state(&self) -> &S {
-        &self.state
-    }
-
-    /// Resumes deferred execution context, which means we execute next logic part and store its
-    /// state.
-    /// NOTE: While you resume context, you consume it and return new one.
-    ///
-    /// # Example
-    /// ```
-    /// use deferred::Deferred;
-    ///
-    /// let context = Deferred::new(1, vec![
-    ///     |v| v + 1,
-    ///     |v| v + 2,
-    /// ]);
-    /// assert_eq!(context.state(), &1);
-    /// let context = context.resume().unwrap();
-    /// assert_eq!(context.state(), &2);
-    /// let context = context.resume().unwrap();
-    /// assert_eq!(context.state(), &4);
-    /// ```
-    pub fn resume(mut self) -> Option<Self> {
-        if let Some(part) = self.parts.pop_front() {
-            let state = self.state;
-            self.state = part(state);
-            Some(self)
-        } else {
-            None
-        }
-    }
-
-    /// Consumes deferred execution context, which means we execute all remaining logic parts and
-    /// returns state.
-    ///
-    /// # Example
-    /// ```
-    /// use deferred::Deferred;
-    ///
-    /// let context = Deferred::new(1, vec![
-    ///     |v| v + 1,
-    ///     |v| v + 2,
-    /// ]);
-    /// assert_eq!(context.consume(), 4);
-    /// ```
-    pub fn consume(mut self) -> S {
-        while self.can_resume() {
-            self = self.resume().unwrap();
-        }
-        self.state
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_resume() {
-        fn foo(v: i32) -> Deferred<i32> {
-            Deferred::new(
-                v,
-                vec![
-                    |v| {
-                        println!("= part 1");
-                        v + 1
-                    },
-                    |v| {
-                        println!("= part 2");
-                        v + 2
-                    },
-                ],
-            )
-        }
-
-        let d = foo(1);
-        assert_eq!(d.steps_left(), 2);
-        assert!(d.can_resume());
-        assert_eq!(d.state(), &1);
-
-        let d = d.resume().unwrap();
-        assert_eq!(d.steps_left(), 1);
-        assert!(d.can_resume());
-        assert_eq!(d.state(), &2);
-
-        let d = d.resume().unwrap();
-        assert_eq!(d.steps_left(), 0);
-        assert!(!d.can_resume());
-        assert_eq!(d.state(), &4);
-    }
-
-    #[test]
-    fn test_consume() {
-        fn foo(v: i32) -> Deferred<i32> {
-            Deferred::new(
-                v,
-                vec![
-                    |v| {
-                        println!("= part 1");
-                        v + 1
-                    },
-                    |v| {
-                        println!("= part 2");
-                        v + 2
-                    },
-                ],
-            )
-        }
-
-        assert_eq!(foo(1).consume(), 4);
-    }
-}
+pub use crate::context::*;
+pub use crate::deferred::*;
+pub use crate::deferred_manager::*;
+pub use crate::value::*;

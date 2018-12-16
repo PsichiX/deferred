@@ -1,6 +1,6 @@
 [package]
 name = "deferred"
-version = "1.0.0"
+version = "1.1.0"
 authors = ["Patryk 'PsichiX' Budzynski <psichix@gmail.com> (https://psichix.io)"]
 edition = "2018"
 description = "Rust crate to help perform deferred execution of code logic."
